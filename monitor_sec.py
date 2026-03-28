@@ -5,14 +5,15 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-# --- SETTINGS ---
+# --- CONFIGURATION ---
 BASE_DIR = "sec-monitor"
 WATCHLIST_PATH = os.path.join(BASE_DIR, "watchlist.json")
 LOG_PATH = os.path.join(BASE_DIR, "filings_log.json")
 USER_AGENT = "Mozilla/5.0 (compatible; MaxSECMonitor/1.0; mgsoccer17@gmail.com)"
+START_DATE = "2026-01-01" # Only 2026 data
 
 def get_form4_details(cik, accession, doc_name):
-    """Deep-dive into Form 4 XML to get Shares and Price"""
+    """Deep-dive into Form 4 to extract Name, Title, and P/S/A trades > 1,000 shares"""
     acc_clean = accession.replace('-', '')
     url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_clean}/{doc_name}"
     
@@ -20,42 +21,53 @@ def get_form4_details(cik, accession, doc_name):
         resp = requests.get(url, headers={"User-Agent": USER_AGENT})
         if resp.status_code != 200: return None
         
-        # Parse the XML content
         root = ET.fromstring(resp.content)
-        transactions = []
+        name = root.find(".//rptOwnerName").text if root.find(".//rptOwnerName") is not None else "Unknown"
+        title = root.find(".//officerTitle").text if root.find(".//officerTitle") is not None else "Director/Owner"
         
-        # Look for non-derivative transactions (Common Stock)
-        for tx in root.findall(".//nonDerivativeTransaction"):
-            date = tx.find(".//transactionDate/value").text if tx.find(".//transactionDate/value") is not None else ""
+        transactions = []
+        # Check both Table I (Common Stock) and Table II (Derivatives/Options)
+        for tx in root.findall(".//nonDerivativeTransaction") + root.findall(".//derivativeTransaction"):
             code = tx.find(".//transactionCode").text if tx.find(".//transactionCode") is not None else ""
-            shares = tx.find(".//transactionShares/value").text if tx.find(".//transactionShares/value") is not None else "0"
-            price = tx.find(".//transactionPricePerShare/value").text if tx.find(".//transactionPricePerShare/value") is not None else "0"
+            shares_node = tx.find(".//transactionShares/value") or tx.find(".//underlyingSecurityShares/value")
+            shares = float(shares_node.text) if shares_node is not None else 0
             
-            # P = Purchase (Buy), S = Sale (Sell)
-            tx_type = "BUY" if code == "P" else "SELL" if code == "S" else code
+            # --- STRATEGIC FILTERS ---
+            if code not in ["P", "S", "A"]: continue # Only P, S, or A
+            if code in ["S", "A"] and shares <= 1000: continue # S and A must be > 1000
+            
+            price_node = tx.find(".//transactionPricePerShare/value")
+            price = float(price_node.text) if price_node is not None else 0
+            date = tx.find(".//transactionDate/value").text if tx.find(".//transactionDate/value") is not None else ""
             
             transactions.append({
+                "insider_name": name,
+                "insider_title": title,
                 "date": date,
-                "type": tx_type,
-                "shares": float(shares),
-                "price": float(price),
-                "total_value": float(shares) * float(price)
+                "type": "BUY (P)" if code == "P" else "SELL (S)" if code == "S" else "AWARD (A)",
+                "shares": shares,
+                "price": price,
+                "value": shares * price
             })
-        return transactions
+        return transactions if transactions else None
     except:
         return None
 
 def run_monitor():
-    # 1. Load Files
+    if not os.path.exists(WATCHLIST_PATH): return
     with open(WATCHLIST_PATH, 'r') as f: watchlist = json.load(f)
+    
+    # Load and filter existing log to ensure only 2026 data exists
     if os.path.exists(LOG_PATH):
-        with open(LOG_PATH, 'r') as f: filings_log = json.load(f)
-    else: filings_log = []
+        with open(LOG_PATH, 'r') as f: 
+            raw_log = json.load(f)
+            filings_log = [f for f in raw_log if f['filingDate'] >= START_DATE]
+    else:
+        filings_log = []
     
     existing_accs = {f['accessionNumber'] for f in filings_log}
     new_count = 0
 
-    # 2. Poll SEC
     for co in watchlist['companies']:
         if co['status'] != 'ACTIVE': continue
         cik = co['cik'].zfill(10)
@@ -68,6 +80,9 @@ def run_monitor():
             recent = resp.json().get('filings', {}).get('recent', {})
             for i in range(len(recent.get('accessionNumber', []))):
                 acc = recent['accessionNumber'][i]
+                f_date = recent['filingDate'][i]
+                
+                if f_date < START_DATE: break # Stop checking this company
                 if acc in existing_accs: continue
                 
                 form = recent['form'][i]
@@ -76,12 +91,11 @@ def run_monitor():
                     "ticker": co['ticker'],
                     "accessionNumber": acc,
                     "form": form,
-                    "filingDate": recent['filingDate'][i],
+                    "filingDate": f_date,
                     "description": recent['primaryDocDescription'][i],
                     "details": None
                 }
 
-                # 3. IF FORM 4, DO THE DEEP DIVE
                 if form in ["4", "4/A"]:
                     doc = recent['primaryDocument'][i]
                     entry["details"] = get_form4_details(cik, acc, doc)
@@ -93,7 +107,6 @@ def run_monitor():
 
     with open(LOG_PATH, 'w') as f:
         json.dump(filings_log, f, indent=2)
-    print(f"Finished! Found {new_count} new filings.")
 
 if __name__ == "__main__":
     run_monitor()
