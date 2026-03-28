@@ -2,6 +2,7 @@ import json
 import os
 import requests
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 # --- SETTINGS ---
@@ -10,32 +11,51 @@ WATCHLIST_PATH = os.path.join(BASE_DIR, "watchlist.json")
 LOG_PATH = os.path.join(BASE_DIR, "filings_log.json")
 USER_AGENT = "Mozilla/5.0 (compatible; MaxSECMonitor/1.0; mgsoccer17@gmail.com)"
 
-CATEGORIES = {
-    "Annual/Quarterly Reports": ["10-K", "10-K/A", "10-Q", "10-Q/A"],
-    "Current Reports": ["8-K", "8-K/A"],
-    "Insider Transactions": ["3", "4", "5", "3/A", "4/A", "5/A"],
-    "Proxy & Governance": ["DEF 14A", "DEFA14A", "DEFM14A", "DEFC14A", "PRE 14A"],
-    "Registration & Offerings": ["S-1", "S-3", "S-4", "S-8", "424B3", "424B4", "424B5"]
-}
-
-def get_category(form_type):
-    for cat, forms in CATEGORIES.items():
-        if form_type in forms: return cat
-    return "Other"
+def get_form4_details(cik, accession, doc_name):
+    """Deep-dive into Form 4 XML to get Shares and Price"""
+    acc_clean = accession.replace('-', '')
+    url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_clean}/{doc_name}"
+    
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT})
+        if resp.status_code != 200: return None
+        
+        # Parse the XML content
+        root = ET.fromstring(resp.content)
+        transactions = []
+        
+        # Look for non-derivative transactions (Common Stock)
+        for tx in root.findall(".//nonDerivativeTransaction"):
+            date = tx.find(".//transactionDate/value").text if tx.find(".//transactionDate/value") is not None else ""
+            code = tx.find(".//transactionCode").text if tx.find(".//transactionCode") is not None else ""
+            shares = tx.find(".//transactionShares/value").text if tx.find(".//transactionShares/value") is not None else "0"
+            price = tx.find(".//transactionPricePerShare/value").text if tx.find(".//transactionPricePerShare/value") is not None else "0"
+            
+            # P = Purchase (Buy), S = Sale (Sell)
+            tx_type = "BUY" if code == "P" else "SELL" if code == "S" else code
+            
+            transactions.append({
+                "date": date,
+                "type": tx_type,
+                "shares": float(shares),
+                "price": float(price),
+                "total_value": float(shares) * float(price)
+            })
+        return transactions
+    except:
+        return None
 
 def run_monitor():
-    if not os.path.exists(WATCHLIST_PATH): return
-    with open(WATCHLIST_PATH, 'r') as f:
-        watchlist = json.load(f)
-    
+    # 1. Load Files
+    with open(WATCHLIST_PATH, 'r') as f: watchlist = json.load(f)
     if os.path.exists(LOG_PATH):
         with open(LOG_PATH, 'r') as f: filings_log = json.load(f)
-    else:
-        filings_log = []
+    else: filings_log = []
     
     existing_accs = {f['accessionNumber'] for f in filings_log}
     new_count = 0
 
+    # 2. Poll SEC
     for co in watchlist['companies']:
         if co['status'] != 'ACTIVE': continue
         cik = co['cik'].zfill(10)
@@ -43,10 +63,6 @@ def run_monitor():
         
         try:
             resp = requests.get(url, headers={"User-Agent": USER_AGENT})
-            if resp.status_code == 429: # Rate limit
-                time.sleep(10)
-                resp = requests.get(url, headers={"User-Agent": USER_AGENT})
-            
             if resp.status_code != 200: continue
             
             recent = resp.json().get('filings', {}).get('recent', {})
@@ -54,17 +70,25 @@ def run_monitor():
                 acc = recent['accessionNumber'][i]
                 if acc in existing_accs: continue
                 
-                filings_log.append({
+                form = recent['form'][i]
+                entry = {
                     "company": co['company'],
                     "ticker": co['ticker'],
                     "accessionNumber": acc,
-                    "form": recent['form'][i],
+                    "form": form,
                     "filingDate": recent['filingDate'][i],
-                    "category": get_category(recent['form'][i]),
-                    "description": recent['primaryDocDescription'][i]
-                })
+                    "description": recent['primaryDocDescription'][i],
+                    "details": None
+                }
+
+                # 3. IF FORM 4, DO THE DEEP DIVE
+                if form in ["4", "4/A"]:
+                    doc = recent['primaryDocument'][i]
+                    entry["details"] = get_form4_details(cik, acc, doc)
+                
+                filings_log.append(entry)
                 new_count += 1
-            time.sleep(0.1) # Be nice to SEC
+            time.sleep(0.1)
         except: continue
 
     with open(LOG_PATH, 'w') as f:
