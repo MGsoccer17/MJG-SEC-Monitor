@@ -12,10 +12,6 @@ jobs:
   run-monitor:
     name: Run SEC Monitor
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ./MJG-SEC-Monitor
 
     steps:
       - name: Checkout code
@@ -29,8 +25,17 @@ jobs:
       - name: Install Tools
         run: pip install requests
 
-      - name: Run SEC Monitor
-        run: python monitor_sec.py
+      - name: Find and Run SEC Monitor
+        run: |
+          # This command searches for the file and runs it wherever it is!
+          FILE_PATH=$(find . -name "monitor_sec.py" -print -quit)
+          if [ -z "$FILE_PATH" ]; then
+            echo "ERROR: monitor_sec.py not found!"
+            exit 1
+          else
+            echo "Found script at: $FILE_PATH"
+            python "$FILE_PATH"
+          fi
 
       - name: Save Results
         run: |
