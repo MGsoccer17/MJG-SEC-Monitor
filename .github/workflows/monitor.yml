@@ -2,21 +2,30 @@ name: MJG SEC Monitor Automation
 
 on:
   schedule:
-    - cron: '0 * * * *'  # This tells it to run every hour
-  workflow_dispatch:      # This adds a "Run Now" button for you
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write         # Allows the robot to save the new data back to your folder
+  contents: write
 
 jobs:
   run-monitor:
+    runs-name: Run SEC Monitor
     runs-on: ubuntu-latest
+    
+    # This line tells the computer: "Go inside the MJG-SEC-Monitor folder first!"
+    defaults:
+      run:
+        working-directory: ./MJG-SEC-Monitor
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          path: '.' # Checkout everything
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -31,4 +40,4 @@ jobs:
           git config --global user.name "MJG-Monitor-Bot"
           git config --global user.email "actions@github.com"
           git add sec-monitor/filings_log.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Log with New Filings" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Log" && git push)
