@@ -2,11 +2,11 @@ name: MJG SEC Monitor Automation
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Runs every hour on the hour
-  workflow_dispatch:      # Allows you to click the "Run" button manually
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write         # Allows the robot to save data and the dashboard
+  contents: write
 
 jobs:
   run-monitor:
@@ -25,30 +25,34 @@ jobs:
       - name: Install Tools
         run: pip install requests
 
-      - name: Run Monitor and Generate Dashboard
+      - name: Find, Run, and Generate Dashboard
         run: |
-          # 1. Enter the subfolder where your code lives
-          cd MJG-SEC-Monitor
+          # 1. Find where the 'monitor_sec.py' file is hiding
+          SCRIPT_PATH=$(find . -name "monitor_sec.py" -print -quit)
+          SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
           
-          # 2. Run the monitor to collect new SEC data
+          echo "I found your code in folder: $SCRIPT_DIR"
+          
+          # 2. Go into that folder
+          cd "$SCRIPT_DIR"
+          
+          # 3. Run the monitor
           echo "Running Monitor..."
           python monitor_sec.py
           
-          # 3. Run the dashboard script to create the webpage
+          # 4. Run the dashboard (it's in the sec-monitor subfolder)
           echo "Generating Dashboard..."
           python sec-monitor/generate_dashboard.py
           
-          # 4. Move the final dashboard (index.html) to the root folder
-          # This makes it easier for GitHub Pages to find it.
-          mv index.html ../index.html
+          # 5. Move the dashboard (index.html) to the root for GitHub Pages
+          # We check if we are already in the root or a subfolder first
+          if [ "$SCRIPT_DIR" != "." ]; then
+            cp index.html ../index.html
+          fi
 
       - name: Save Results to GitHub
         run: |
           git config --global user.name "MJG-Monitor-Bot"
           git config --global user.email "actions@github.com"
-          
-          # Add everything (The updated Log AND the new index.html)
           git add .
-          
-          # Save the changes if there is new data
           git diff --quiet && git diff --staged --quiet || (git commit -m "SEC Update: New Filings and Dashboard Refresh" && git push)
