@@ -2,15 +2,15 @@ name: MJG SEC Monitor Automation
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *'  # Runs every hour on the hour
+  workflow_dispatch:      # Allows you to click the "Run" button manually
 
 permissions:
-  contents: write
+  contents: write         # Allows the robot to save data and the dashboard
 
 jobs:
   run-monitor:
-    name: Run SEC Monitor
+    name: Run SEC Monitor and Dashboard
     runs-on: ubuntu-latest
 
     steps:
@@ -25,21 +25,30 @@ jobs:
       - name: Install Tools
         run: pip install requests
 
-      - name: Find and Run SEC Monitor
+      - name: Run Monitor and Generate Dashboard
         run: |
-          # This command searches for the file and runs it wherever it is!
-          FILE_PATH=$(find . -name "monitor_sec.py" -print -quit)
-          if [ -z "$FILE_PATH" ]; then
-            echo "ERROR: monitor_sec.py not found!"
-            exit 1
-          else
-            echo "Found script at: $FILE_PATH"
-            python "$FILE_PATH"
-          fi
+          # 1. Enter the subfolder where your code lives
+          cd MJG-SEC-Monitor
+          
+          # 2. Run the monitor to collect new SEC data
+          echo "Running Monitor..."
+          python monitor_sec.py
+          
+          # 3. Run the dashboard script to create the webpage
+          echo "Generating Dashboard..."
+          python sec-monitor/generate_dashboard.py
+          
+          # 4. Move the final dashboard (index.html) to the root folder
+          # This makes it easier for GitHub Pages to find it.
+          mv index.html ../index.html
 
-      - name: Save Results
+      - name: Save Results to GitHub
         run: |
           git config --global user.name "MJG-Monitor-Bot"
           git config --global user.email "actions@github.com"
+          
+          # Add everything (The updated Log AND the new index.html)
           git add .
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update Log" && git push)
+          
+          # Save the changes if there is new data
+          git diff --quiet && git diff --staged --quiet || (git commit -m "SEC Update: New Filings and Dashboard Refresh" && git push)
